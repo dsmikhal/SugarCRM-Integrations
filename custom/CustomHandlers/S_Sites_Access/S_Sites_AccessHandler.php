@@ -1,7 +1,7 @@
 <?php
 
 require_once('custom/CustomHandlers/Global_Functions.php');
-
+require_once('custom/CustomHandlers/DoceboConnector.php');
 
 class S_Sites_AccessHandler extends Global_Functions {
 	
@@ -82,7 +82,99 @@ class S_Sites_AccessHandler extends Global_Functions {
 	}
 
 
+    function Create_User_In_Docebo($bean, $event, $arguments)
+    {
+        global  $sugar_config, $GLOBALS;
 
+        //CHECK IF THIS IS THE A NEW SL ACCOUNT FOR THE CLIENT AND THERE IS NO JOOMLA ID, IF YES, CREATE A JOOMLA USER
+        if((empty($bean->fetched_row) || (!empty($bean->fetched_row) && $bean->joomla_id == 0 && $bean->create_user == 1)) && $bean->site == $sugar_config['docebo']['url'])
+        {
+            $clientId = $this->_get_related_id($bean,'contacts_s_sites_access_1contacts_ida','contacts_s_sites_access_1');
+            $leadId = $this->_get_related_id($bean,'leads_s_sites_access_1leads_ida','leads_s_sites_access_1');
+
+            if($leadId != ''){
+                $module_name = 'Leads';
+                $contactObj = BeanFactory::getBean('Leads');
+                $contactObj->retrieve($leadId);
+            }
+            if($clientId != ''){
+                $module_name = 'Contacts';
+                $contactObj = BeanFactory::getBean('Contacts');
+                $contactObj->retrieve($clientId);
+            }
+
+
+            if($bean->password == ' ' || $bean->password == ''){
+                $password = $this->createPassword(6);
+                $bean->password = $password;
+            }else{
+                $password = $bean->password;
+            }
+
+            $Docebo = new DoceboAPI($sugar_config['docebo']);
+
+            $arrPOST = array(
+                'userid'    => $bean->name,
+                'firstname' => $contactObj->first_name,
+                'lastname'  => $contactObj->last_name,
+                'password'  => $bean->password,
+                'email'     => $bean->name,
+                'ext_user_type'  => 'SugarCRM',
+                'ext_user' => 0,
+                'role' => 'student',
+            );
+
+            $checkDocebo = $Docebo->call('user/checkUsername', array('userid'=>$bean->name));
+            $checkDocebo = json_decode($checkDocebo);
+            if($checkDocebo->success == 1 && isset($checkDocebo->idst))
+            {
+                $idSt = $checkDocebo->idst;
+            }
+            else
+            {
+                $createDocebo = $Docebo->call('user/create', $arrPOST);
+                $createDocebo = json_decode($createDocebo);
+                $idSt = $createDocebo->idst;
+            }
+
+
+            if($createDocebo->success === true || $checkDocebo->success === true)
+            {
+                $bean->joomla_id = $idSt;
+                $bean->password = '';
+		  $bean->create_user = 0;
+                // RE-CREATE User enrollments in Docebo
+                $result = $bean->db->query("  SELECT uag.id,uag.name,uag.website, uag.joomla_id FROM s_sites_access_uag_user_access_group_2_c su, uag_user_access_group uag
+                                            WHERE su.s_sites_access_uag_user_access_group_2s_sites_access_ida='{$bean->id}' AND su.deleted=0
+                                          and su.s_sites_access_uag_user_access_group_2uag_user_access_group_idb = uag.id and uag.deleted = 0 and uag.website = '{$bean->site}'
+                                            union
+                                            SELECT uag.id,uag.name,uag.website, uag.joomla_id FROM s_sites_access_uag_user_access_group_1_c su, uag_user_access_group uag
+                                              WHERE su.s_sites_access_uag_user_access_group_1s_sites_access_ida='{$bean->id}' AND su.deleted=0
+                                            and su.s_sites_access_uag_user_access_group_1uag_user_access_group_idb = uag.id and uag.deleted = 0 and uag.website = '{$bean->site}'");
+
+                while ($row = $bean->db->fetchByAssoc($result)) {
+                    $arrPOST = array(
+                        'idst' => $bean->joomla_id,
+                        'course_id' => $row['joomla_id'],
+                        'user_level' => 'student',
+                    );
+
+                    $createDocebo = $Docebo->call('course/addUserSubscription', $arrPOST);
+                    $createDocebo = json_decode($createDocebo);
+                    if ($createDocebo->success === true) {
+                        $GLOBALS['log']->info('Enroll_User_In_Docebo : User successfully RE enrolled in Docebo course ' . $row['name']);
+                    } else {
+                        $GLOBALS['log']->error('Enroll_User_In_Docebo : RE Enroll user in Docebo failed. Params: ' . print_r($arrPOST, true) . ' ERROR: ' . print_r($createDocebo, true));
+                    }
+                }
+
+            }else{
+                $GLOBALS['log']->error('Create_User_In_Docebo : Create user in Docebo failed. Params: '.print_r($arrPOST,true).' ERROR: '.print_r($createDocebo,true));
+            }
+
+        }
+
+    }
 	
     /**
     * Push user site access to Joomla Site.
