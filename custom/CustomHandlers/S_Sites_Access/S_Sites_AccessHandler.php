@@ -82,7 +82,7 @@ class S_Sites_AccessHandler extends Global_Functions {
 	}
 
 
-  
+
 	
     /**
     * Push user site access to Joomla Site.
